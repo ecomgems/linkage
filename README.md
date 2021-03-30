@@ -33,3 +33,13 @@ servers:
         remote_host: elastic
         local_port: 9200
 ```
+
+## Testing
+
+```bash
+go test ./...
+go test -bench ./...
+go test -coverprofile .coverate.out ./...
+go tool cover -html=.coverate.out
+godoc -http :8080
+```

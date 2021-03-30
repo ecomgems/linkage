@@ -15,7 +15,7 @@ func main() {
 		Version:     "1.0.0",
 		Action:      tunnels.TunnelCmdHandler,
 		Flags: []cli.Flag{
-			&cli.StringFlag{
+			&cli.PathFlag{
 				Name:     "config",
 				Aliases:  []string{"c"},
 				Usage:    "Load configuration from `FILE`",
