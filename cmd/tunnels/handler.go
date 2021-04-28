@@ -2,12 +2,11 @@ package tunnels
 
 import (
 	"github.com/ecomgems/linkage/utils/config"
-	"github.com/ecomgems/linkage/utils/printer"
 	"github.com/ecomgems/linkage/utils/tunnel"
 	"github.com/urfave/cli/v2"
 )
 
-// Function TunnelCmdHandler the execution of the application.
+// TunnelCmdHandler function the execution of the application.
 // It opens tunnels using a configuration file and manages it
 // until all tunnels will be closed.
 func TunnelCmdHandler(c *cli.Context) error {
@@ -17,7 +16,7 @@ func TunnelCmdHandler(c *cli.Context) error {
 		return err
 	}
 
-	tunnels := []tunnel.Tunnel{}
+	var tunnels []*tunnel.Tunnel
 	for _, serverConfig := range configData.Servers {
 		for _, tunnelConfig := range serverConfig.Tunnels {
 			newTunnel := tunnel.Create(serverConfig, tunnelConfig)
@@ -25,9 +24,8 @@ func TunnelCmdHandler(c *cli.Context) error {
 		}
 	}
 
-	for {
-		printer.Print(tunnels)
-	}
+	wait := make(chan bool)
+	<- wait
 
 	return nil
 }
