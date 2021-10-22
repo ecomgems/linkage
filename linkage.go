@@ -21,6 +21,11 @@ func main() {
 				Usage:    "Load configuration from `FILE`",
 				Required: true,
 			},
+			&cli.BoolFlag{
+				Name: "debug",
+				Aliases: []string{"d"},
+				Usage: "Print debug information into stdout",
+			},
 		},
 	}
 
