@@ -22,9 +22,10 @@ func main() {
 				Required: true,
 			},
 			&cli.BoolFlag{
-				Name: "debug",
-				Aliases: []string{"d"},
-				Usage: "Print debug information into stdout",
+				Name:        "debug",
+				Aliases:     []string{"d"},
+				Usage:       "Print debug information into stdout",
+				DefaultText: "yes",
 			},
 		},
 	}

@@ -35,7 +35,9 @@ func Create(appRuntime runtime.ApplicationRuntime, serverConfig config.Server, t
 }
 
 func (t *Tunnel) Open(runtime runtime.ApplicationRuntime) {
-	log.Println("open:", t.GetTunnelId())
+	if t.Debug {
+		log.Println("open:", t.GetTunnelId())
+	}
 
 	sshTun := sshtun.New(
 		t.TunnelConfig.LocalPort,
@@ -47,7 +49,7 @@ func (t *Tunnel) Open(runtime runtime.ApplicationRuntime) {
 	sshTun.SetUser(t.ServerConfig.User)
 	sshTun.SetPassword(t.ServerConfig.Password)
 	sshTun.SetKeyFile(
-		getFullKeyPath(t.ServerConfig.KeyFile),
+		GetFullKeyPath(t.ServerConfig.KeyFile),
 	)
 	sshTun.SetRemoteHost(t.TunnelConfig.RemoteHost)
 	sshTun.SetTimeout(365 * 24 * time.Hour)
@@ -70,7 +72,9 @@ func (t *Tunnel) Open(runtime runtime.ApplicationRuntime) {
 	go func() {
 		for {
 			if err := sshTun.Start(); err != nil {
-				log.Println("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
+				if t.Debug {
+					log.Println("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
+				}
 				time.Sleep(time.Second)
 			}
 		}
@@ -78,17 +82,22 @@ func (t *Tunnel) Open(runtime runtime.ApplicationRuntime) {
 }
 
 func (t *Tunnel) GetTunnelId() string {
-	return fmt.Sprintf(
-		"%d:%s:%d over %s@%s:%d",
+	tunnelId := fmt.Sprintf(
+		"%d:%s:%d over %s@%s",
 		t.TunnelConfig.RemotePort,
 		t.TunnelConfig.RemoteHost,
 		t.TunnelConfig.LocalPort,
 		t.ServerConfig.User,
 		t.ServerConfig.Host,
-		t.ServerConfig.Port,
 	)
+
+	if t.ServerConfig.Port != 22 {
+		tunnelId = fmt.Sprintf("%s:%d", tunnelId, t.ServerConfig.Port)
+	}
+
+	return tunnelId
 }
 
-func getFullKeyPath(keyPath string) string {
+func GetFullKeyPath(keyPath string) string {
 	return strings.Replace(keyPath, "~", os.Getenv("HOME"), 1)
 }
