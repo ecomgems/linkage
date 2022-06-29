@@ -3,7 +3,6 @@ module github.com/ecomgems/linkage
 go 1.17
 
 require (
-	github.com/ecomgems/sshtun v0.0.3-0.20211022221543-6521ceb36a3a
 	github.com/gliderlabs/ssh v0.3.4
 	github.com/stretchr/testify v1.7.0
 	github.com/urfave/cli/v2 v2.3.0

@@ -22,7 +22,7 @@ func (t TestServerHandler) ServeHTTP(wr http.ResponseWriter, req *http.Request) 
 }
 
 func TestTunnel_Open_Send_A_Bites(t *testing.T) {
-	// 1. Open server on port 58880
+	// 1. InitSpeedCalculation server on port 58880
 	handler := &TestServerHandler{}
 	go func() {
 		err := http.ListenAndServe(":58880", handler)
@@ -31,7 +31,7 @@ func TestTunnel_Open_Send_A_Bites(t *testing.T) {
 		}
 	}()
 
-	// 2. Open SSH server on port 58890
+	// 2. InitSpeedCalculation SSH server on port 58890
 	go func() {
 		forwardHandler := &ssh.ForwardedTCPHandler{}
 		server := ssh.Server{
@@ -58,7 +58,7 @@ func TestTunnel_Open_Send_A_Bites(t *testing.T) {
 		log.Fatal(server.ListenAndServe())
 	}()
 
-	// 3. Open tunnel to 58880 through 58890 on port 58870
+	// 3. InitSpeedCalculation tunnel to 58880 through 58890 on port 58870
 	go func() {
 		tunnel := &Tunnel{
 			ServerConfig: config.Server{
@@ -75,7 +75,7 @@ func TestTunnel_Open_Send_A_Bites(t *testing.T) {
 			},
 		}
 
-		tunnel.Open(runtime.ApplicationRuntime{})
+		tunnel.Init(runtime.ApplicationRuntime{})
 	}()
 
 	// 4. Connect to 58870 and send a bites

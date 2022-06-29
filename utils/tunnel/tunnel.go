@@ -1,103 +1,137 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
+	"golang.org/x/crypto/ssh"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/ecomgems/linkage/utils/config"
 	"github.com/ecomgems/linkage/utils/runtime"
-	"github.com/ecomgems/sshtun"
-	"log"
-	"os"
-	"strings"
-	"time"
+)
+
+type State int
+
+const (
+	Starting State = iota
+	Started
+	Stopped
 )
 
 type Tunnel struct {
+	*sync.Mutex
+
 	ServerConfig config.Server
 	TunnelConfig config.Tunnel
-	TxCount      int64
-	RxCount      int64
-	Error        error
-	Debug        bool
+	LoggerCh     chan string
+	StatsCh      chan *Stats
+
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stats      *Stats
+	timer      chan time.Time
+	errChannel chan error
+	sshConfig  *ssh.ClientConfig
 }
 
-func Create(appRuntime runtime.ApplicationRuntime, serverConfig config.Server, tunnelConfig config.Tunnel) *Tunnel {
-	t := Tunnel{
-		ServerConfig: serverConfig,
-		TunnelConfig: tunnelConfig,
-		TxCount:      0,
-		RxCount:      0,
-		Error:        nil,
+func NewTunnel(appRuntime runtime.ApplicationRuntime, serverConfig config.Server, tunnelConfig config.Tunnel) *Tunnel {
+
+	statsChannel := make(chan *Stats)
+	stats := NewStats(Starting, func(stats *Stats) {
+		statsChannel <- stats
+	})
+
+	sshConfig, err := NewSshConfig(serverConfig)
+	if err != nil {
+		panic(err)
 	}
 
-	go t.Open(appRuntime)
+	t := Tunnel{
+		ServerConfig: serverConfig,
+		StatsCh:      statsChannel,
+		TunnelConfig: tunnelConfig,
+		LoggerCh:     make(chan string),
+		stats:        stats,
+		sshConfig:    sshConfig,
+	}
+
+	go t.Init(appRuntime)
 
 	return &t
 }
 
-func (t *Tunnel) Open(runtime runtime.ApplicationRuntime) {
-	if t.Debug {
-		log.Println("open:", t.GetTunnelId())
-	}
-
-	sshTun := sshtun.New(
-		t.TunnelConfig.LocalPort,
-		t.ServerConfig.Host,
-		t.TunnelConfig.RemotePort,
-	)
-
-	sshTun.SetPort(t.ServerConfig.Port)
-	sshTun.SetUser(t.ServerConfig.User)
-	sshTun.SetPassword(t.ServerConfig.Password)
-	sshTun.SetKeyFile(
-		GetFullKeyPath(t.ServerConfig.KeyFile),
-	)
-	sshTun.SetRemoteHost(t.TunnelConfig.RemoteHost)
-	sshTun.SetTimeout(365 * 24 * time.Hour)
-
-	sshTun.SetDebug(runtime.IsDebugMode)
-
-	if runtime.IsDebugMode {
-		sshTun.SetConnState(func(tun *sshtun.SSHTun, state sshtun.ConnState) {
-			switch state {
-			case sshtun.StateStarting:
-				log.Println("STATE is Starting", t.GetTunnelId())
-			case sshtun.StateStarted:
-				log.Println("STATE is Started", t.GetTunnelId())
-			case sshtun.StateStopped:
-				log.Println("STATE is Stopped", t.GetTunnelId())
-			}
-		})
-	}
+func (t *Tunnel) Init(runtime runtime.ApplicationRuntime) {
+	t.LoggerCh <- fmt.Sprint("init:", t.GetTunnelId())
 
 	go func() {
 		for {
-			if err := sshTun.Start(); err != nil {
-				if t.Debug {
-					log.Println("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
-				}
+			if err := t.Start(); err != nil {
+				t.LoggerCh <- fmt.Sprint("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
+				t.LoggerCh <- fmt.Sprint("wait for 1 second before restart...")
+
 				time.Sleep(time.Second)
 			}
 		}
 	}()
 }
 
-func (t *Tunnel) GetTunnelId() string {
-	tunnelId := fmt.Sprintf(
-		"%d:%s:%d over %s@%s",
-		t.TunnelConfig.RemotePort,
-		t.TunnelConfig.RemoteHost,
-		t.TunnelConfig.LocalPort,
-		t.ServerConfig.User,
-		t.ServerConfig.Host,
-	)
+func (t *Tunnel) Start() error {
+	t.Lock()
 
-	if t.ServerConfig.Port != 22 {
-		tunnelId = fmt.Sprintf("%s:%d", tunnelId, t.ServerConfig.Port)
+	localListener, err := net.Listen("tcp", fmt.Sprintf(":%d", t.TunnelConfig.LocalPort))
+	if err != nil {
+		return t.errorWhileNotStarted(err)
 	}
 
-	return tunnelId
+	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.errChannel = make(chan error)
+
+	go func() {
+		for {
+			incomingConn, err := localListener.Accept()
+			if err != nil {
+				t.errorWhenStarted(fmt.Errorf("local accept on :%d failed: %s", t.TunnelConfig.LocalPort, err.Error()))
+				break
+			}
+
+			t.LoggerCh <- fmt.Sprintf("accepted connection from %s", incomingConn.RemoteAddr().String())
+
+			// Launch the forward
+			go t.forward(incomingConn)
+			t.stats.AddConnQty()
+		}
+	}()
+
+	go func() {
+		select {
+		case <-t.ctx.Done():
+			localListener.Close()
+			t.stats.SetConnQty(0)
+		}
+	}()
+
+	t.stats.UpdateState(Started)
+	t.LoggerCh <- fmt.Sprintf("listening on :%d", t.TunnelConfig.LocalPort)
+
+	t.Unlock()
+
+	select {
+	case err := <-t.errChannel:
+		return err
+	}
 }
 
-func GetFullKeyPath(keyPath string) string {
-	return strings.Replace(keyPath, "~", os.Getenv("HOME"), 1)
+func (t *Tunnel) Stop() error {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (t *Tunnel) isStarted() bool {
+	return t.stats.State == Started
+}
+
+func (t *Tunnel) forward(conn net.Conn) {
+
 }
