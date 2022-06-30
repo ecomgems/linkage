@@ -3,13 +3,14 @@ package tunnel
 import (
 	"context"
 	"fmt"
-	"golang.org/x/crypto/ssh"
+	"io"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/ecomgems/linkage/utils/config"
 	"github.com/ecomgems/linkage/utils/runtime"
+	"golang.org/x/crypto/ssh"
 )
 
 type State int
@@ -28,7 +29,7 @@ type Tunnel struct {
 	LoggerCh     chan string
 	StatsCh      chan *Stats
 
-	ctx        context.Context
+	tunnelCtx  context.Context
 	cancel     context.CancelFunc
 	stats      *Stats
 	timer      chan time.Time
@@ -37,7 +38,6 @@ type Tunnel struct {
 }
 
 func NewTunnel(appRuntime runtime.ApplicationRuntime, serverConfig config.Server, tunnelConfig config.Tunnel) *Tunnel {
-
 	statsChannel := make(chan *Stats)
 	stats := NewStats(Starting, func(stats *Stats) {
 		statsChannel <- stats
@@ -49,6 +49,7 @@ func NewTunnel(appRuntime runtime.ApplicationRuntime, serverConfig config.Server
 	}
 
 	t := Tunnel{
+		Mutex:        &sync.Mutex{},
 		ServerConfig: serverConfig,
 		StatsCh:      statsChannel,
 		TunnelConfig: tunnelConfig,
@@ -85,7 +86,7 @@ func (t *Tunnel) Start() error {
 		return t.errorWhileNotStarted(err)
 	}
 
-	t.ctx, t.cancel = context.WithCancel(context.Background())
+	t.tunnelCtx, t.cancel = context.WithCancel(context.Background())
 	t.errChannel = make(chan error)
 
 	go func() {
@@ -98,15 +99,13 @@ func (t *Tunnel) Start() error {
 
 			t.LoggerCh <- fmt.Sprintf("accepted connection from %s", incomingConn.RemoteAddr().String())
 
-			// Launch the forward
 			go t.forward(incomingConn)
-			t.stats.AddConnQty()
 		}
 	}()
 
 	go func() {
 		select {
-		case <-t.ctx.Done():
+		case <-t.tunnelCtx.Done():
 			localListener.Close()
 			t.stats.SetConnQty(0)
 		}
@@ -123,15 +122,67 @@ func (t *Tunnel) Start() error {
 	}
 }
 
-func (t *Tunnel) Stop() error {
-	//TODO implement me
-	panic("implement me")
-}
-
 func (t *Tunnel) isStarted() bool {
 	return t.stats.State == Started
 }
 
-func (t *Tunnel) forward(conn net.Conn) {
+func (t *Tunnel) forward(localConn net.Conn) {
+	defer localConn.Close()
 
+	sshServerStr := fmt.Sprintf(
+		"%s:%d",
+		t.ServerConfig.Host,
+		t.ServerConfig.Port,
+	)
+	sshConn, err := ssh.Dial("tcp", sshServerStr, t.sshConfig)
+	if err != nil {
+		t.errorWhenStarted(err)
+		return
+	}
+	defer sshConn.Close()
+	t.LoggerCh <- fmt.Sprintf("SSH connection to %s established", sshServerStr)
+
+	remoteServerStr := fmt.Sprintf(
+		"%s:%d",
+		t.TunnelConfig.RemoteHost,
+		t.TunnelConfig.RemotePort,
+	)
+	remoteConn, err := sshConn.Dial("tcp", remoteServerStr)
+	if err != nil {
+		t.errorWhenStarted(err)
+		return
+	}
+	defer remoteConn.Close()
+	t.LoggerCh <- fmt.Sprintf("remote connection to %s established", remoteServerStr)
+
+	connCtx, connCancel := context.WithCancel(t.tunnelCtx)
+	t.stats.AddConnQty()
+	t.LoggerCh <- fmt.Sprintf("tunnel opened: %s", t.GetTunnelId())
+
+	go func() {
+		var rxCount int64
+		rxCount, err = io.Copy(remoteConn, localConn)
+		if err != nil {
+			connCancel()
+			return
+		}
+		t.stats.AddRxCount(rxCount)
+	}()
+
+	go func() {
+		var txCount int64
+		txCount, err = io.Copy(localConn, remoteConn)
+		if err != nil {
+			connCancel()
+			return
+		}
+		t.stats.AddTxCount(txCount)
+	}()
+
+	select {
+	case <-connCtx.Done():
+		connCancel()
+		t.stats.SubConnQty()
+		t.LoggerCh <- fmt.Sprintf("tunnel closed: %s", t.GetTunnelId())
+	}
 }

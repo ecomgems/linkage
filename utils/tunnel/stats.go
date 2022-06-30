@@ -19,7 +19,11 @@ type Stats struct {
 }
 
 func NewStats(state State, updateStatsCallback func(stats *Stats)) *Stats {
-	stats := &Stats{State: state, UpdateStatsCallback: updateStatsCallback}
+	stats := &Stats{
+		Mutex:               &sync.Mutex{},
+		State:               state,
+		UpdateStatsCallback: updateStatsCallback,
+	}
 
 	if updateStatsCallback != nil {
 		stats.InitSpeedCalculation()

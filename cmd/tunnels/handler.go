@@ -40,10 +40,10 @@ func TunnelCmdHandler(c *cli.Context) error {
 			go func() {
 				//@todo Revise stats usage
 				for {
-					var statsMessage *tunnel.Stats
-					statsMessage = <-newTunnel.StatsCh
+					//var statsMessage *tunnel.Stats
+					_ = <-newTunnel.StatsCh
 					if runtime.IsDebugMode {
-						log.Println(newTunnel.GetTunnelId(), statsMessage)
+						//log.Println(newTunnel.GetTunnelId(), statsMessage)
 					}
 				}
 			}()

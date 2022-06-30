@@ -60,22 +60,32 @@ func TestTunnel_Open_Send_A_Bites(t *testing.T) {
 
 	// 3. InitSpeedCalculation tunnel to 58880 through 58890 on port 58870
 	go func() {
-		tunnel := &Tunnel{
-			ServerConfig: config.Server{
-				Host: "localhost",
-				Port: 58890,
-				User: "root",
-				//KeyFile:  "",
+		newTunnel := NewTunnel(
+			runtime.ApplicationRuntime{},
+			config.Server{
+				Host:     "127.0.0.1",
+				Port:     58890,
+				User:     "root",
 				Password: "pass",
 			},
-			TunnelConfig: config.Tunnel{
+			config.Tunnel{
 				RemotePort: 58880,
 				RemoteHost: "127.0.0.1",
 				LocalPort:  58870,
 			},
-		}
+		)
 
-		tunnel.Init(runtime.ApplicationRuntime{})
+		go func() {
+			for {
+				_ = <-newTunnel.LoggerCh
+			}
+		}()
+
+		go func() {
+			for {
+				_ = <-newTunnel.StatsCh
+			}
+		}()
 	}()
 
 	// 4. Connect to 58870 and send a bites
