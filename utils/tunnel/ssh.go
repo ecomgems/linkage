@@ -2,14 +2,15 @@ package tunnel
 
 import (
 	"fmt"
-	"github.com/ecomgems/linkage/utils/config"
-	"golang.org/x/crypto/ssh"
 	"io/ioutil"
 	"net"
 	"os"
 	"os/user"
 	"strings"
 	"time"
+
+	"github.com/ecomgems/linkage/utils/config"
+	"golang.org/x/crypto/ssh"
 )
 
 func NewSshConfig(serverConfig config.Server) (*ssh.ClientConfig, error) {

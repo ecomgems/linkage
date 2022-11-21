@@ -1,11 +1,12 @@
 package tunnels
 
 import (
+	"log"
+
 	"github.com/ecomgems/linkage/utils/config"
 	"github.com/ecomgems/linkage/utils/runtime"
 	"github.com/ecomgems/linkage/utils/tunnel"
 	"github.com/urfave/cli/v2"
-	"log"
 )
 
 // TunnelCmdHandler is the main execution function of the application.

@@ -9,9 +9,9 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:        "linkage",
+		Name:        "linkage.bak",
 		Description: "Linkage is an SSH TCP Port Forwarding app to open multiple tunnels simultaneously.",
-		Usage:       "linkage -c example.yml",
+		Usage:       "linkage.bak -c example.yml",
 		Version:     "1.0.0",
 		Action:      tunnels.TunnelCmdHandler,
 		Flags: []cli.Flag{

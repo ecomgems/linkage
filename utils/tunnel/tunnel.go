@@ -163,6 +163,7 @@ func (t *Tunnel) forward(localConn net.Conn) {
 		var rxCount int64
 		rxCount, err = io.Copy(remoteConn, localConn)
 		if err != nil {
+			t.LoggerCh <- fmt.Sprintf("rx error: %s in %s", err.Error(), t.GetTunnelId())
 			connCancel()
 			return
 		}
@@ -173,6 +174,7 @@ func (t *Tunnel) forward(localConn net.Conn) {
 		var txCount int64
 		txCount, err = io.Copy(localConn, remoteConn)
 		if err != nil {
+			t.LoggerCh <- fmt.Sprintf("tx error: %s in %s", err.Error(), t.GetTunnelId())
 			connCancel()
 			return
 		}
