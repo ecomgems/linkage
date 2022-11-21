@@ -1,197 +1,190 @@
 package tunnel
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"github.com/ecomgems/linkage/utils/config"
-	"github.com/rgzr/sshtun"
-	"golang.org/x/crypto/ssh"
 	"io"
-	"io/ioutil"
-	"log"
 	"net"
-	"os"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/ecomgems/linkage/utils/config"
+	"github.com/ecomgems/linkage/utils/runtime"
+	"golang.org/x/crypto/ssh"
+)
+
+type State int
+
+const (
+	Starting State = iota
+	Started
+	Stopped
 )
 
 type Tunnel struct {
+	*sync.Mutex
+
 	ServerConfig config.Server
 	TunnelConfig config.Tunnel
-	TxCount      int64
-	RxCount      int64
-	Error        error
+	LoggerCh     chan string
+	StatsCh      chan *Stats
+
+	tunnelCtx  context.Context
+	cancel     context.CancelFunc
+	stats      *Stats
+	timer      chan time.Time
+	errChannel chan error
+	sshConfig  *ssh.ClientConfig
 }
 
-func Create(serverConfig config.Server, tunnelConfig config.Tunnel) *Tunnel {
-	t := Tunnel{
-		ServerConfig: serverConfig,
-		TunnelConfig: tunnelConfig,
-		TxCount:      0,
-		RxCount:      0,
-		Error:        nil,
+func NewTunnel(appRuntime runtime.ApplicationRuntime, serverConfig config.Server, tunnelConfig config.Tunnel) *Tunnel {
+	statsChannel := make(chan *Stats)
+	stats := NewStats(Starting, func(stats *Stats) {
+		statsChannel <- stats
+	})
+
+	sshConfig, err := NewSshConfig(serverConfig)
+	if err != nil {
+		panic(err)
 	}
 
-	go t.Open()
+	t := Tunnel{
+		Mutex:        &sync.Mutex{},
+		ServerConfig: serverConfig,
+		StatsCh:      statsChannel,
+		TunnelConfig: tunnelConfig,
+		LoggerCh:     make(chan string),
+		stats:        stats,
+		sshConfig:    sshConfig,
+	}
+
+	go t.Init(appRuntime)
 
 	return &t
 }
 
-func (t *Tunnel) Open() {
-	log.Println("open:", t.GetTunnelId())
-
-	sshTun := sshtun.New(
-		t.TunnelConfig.LocalPort,
-		t.ServerConfig.Host,
-		t.TunnelConfig.RemotePort,
-	)
-
-	sshTun.SetPort(t.ServerConfig.Port)
-	sshTun.SetUser(t.ServerConfig.User)
-	sshTun.SetPassword(t.ServerConfig.Password)
-	sshTun.SetKeyFile(
-		getFullKeyPath(t.ServerConfig.KeyFile),
-	)
-	sshTun.SetRemoteHost(t.TunnelConfig.RemoteHost)
-	sshTun.SetTimeout(365 * 24 * time.Hour)
-
-	sshTun.SetDebug(true)
-
-	sshTun.SetConnState(func(tun *sshtun.SSHTun, state sshtun.ConnState) {
-		switch state {
-		case sshtun.StateStarting:
-			log.Println("STATE is Starting", t.GetTunnelId())
-		case sshtun.StateStarted:
-			log.Println("STATE is Started", t.GetTunnelId())
-		case sshtun.StateStopped:
-			log.Println("STATE is Stopped", t.GetTunnelId())
-		}
-	})
+func (t *Tunnel) Init(runtime runtime.ApplicationRuntime) {
+	t.LoggerCh <- fmt.Sprint("init:", t.GetTunnelId())
 
 	go func() {
 		for {
-			if err := sshTun.Start(); err != nil {
-				log.Println("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
+			if err := t.Start(); err != nil {
+				t.LoggerCh <- fmt.Sprint("SSH tunnel stopped:", err.Error(), t.GetTunnelId())
+				t.LoggerCh <- fmt.Sprint("wait for 1 second before restart...")
+
 				time.Sleep(time.Second)
 			}
 		}
 	}()
 }
 
-//func (t *Tunnel) Open()  {
-//	log.Println("open:", t.GetTunnelId())
-//
-//	authMethods, err := t.getAuthMethods()
-//	if err != nil {
-//		t.Error = err
-//	}
-//
-//	config := ssh.ClientConfig{
-//		User:            t.ServerConfig.User,
-//		Auth:            authMethods,
-//		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-//	}
-//
-//	sshAddress := fmt.Sprintf("%s:%d", t.ServerConfig.Host, t.ServerConfig.Port)
-//	sshConnection, err := ssh.Dial("tcp", sshAddress, &config)
-//	if err != nil {
-//		log.Fatalln("Line 55", err)
-//	}
-//	log.Println("ssh connection success:", t.GetTunnelId())
-//	defer sshConnection.Close()
-//
-//	remoteAddress := fmt.Sprintf("%s:%d", t.TunnelConfig.RemoteHost, t.TunnelConfig.RemotePort)
-//	remoteConnection, err := sshConnection.Dial("tcp", remoteAddress)
-//	if err != nil {
-//		log.Fatalln("Line 63", err)
-//	}
-//	log.Println("remote connection success:", t.GetTunnelId())
-//
-//	localAddress := fmt.Sprintf("127.0.0.1:%d", t.TunnelConfig.LocalPort)
-//	localConnection, err := net.Listen("tcp", localAddress)
-//	if err != nil {
-//		log.Fatalln(err)
-//	}
-//	defer localConnection.Close()
-//
-//	for {
-//		client, err := localConnection.Accept()
-//		if err != nil {
-//			log.Fatalln("Line 77", err)
-//		}
-//		log.Println("new connection:", t.GetTunnelId())
-//
-//		t.handleClient(client, remoteConnection)
-//	}
-//}
+func (t *Tunnel) Start() error {
+	t.Lock()
 
-func (t *Tunnel) handleClient(client net.Conn, remote net.Conn) {
+	localListener, err := net.Listen("tcp", fmt.Sprintf(":%d", t.TunnelConfig.LocalPort))
+	if err != nil {
+		return t.errorWhileNotStarted(err)
+	}
+
+	t.tunnelCtx, t.cancel = context.WithCancel(context.Background())
+	t.errChannel = make(chan error)
+
 	go func() {
-		_, err := io.Copy(client, remote)
-		if err != nil {
-			log.Fatalln("Line 89", err)
+		for {
+			incomingConn, err := localListener.Accept()
+			if err != nil {
+				t.errorWhenStarted(fmt.Errorf("local accept on :%d failed: %s", t.TunnelConfig.LocalPort, err.Error()))
+				break
+			}
+
+			t.LoggerCh <- fmt.Sprintf("accepted connection from %s", incomingConn.RemoteAddr().String())
+
+			go t.forward(incomingConn)
 		}
 	}()
 
 	go func() {
-		_, err := io.Copy(remote, client)
-		if err != nil {
-			log.Fatalln("Line 96", err)
+		select {
+		case <-t.tunnelCtx.Done():
+			localListener.Close()
+			t.stats.SetConnQty(0)
 		}
 	}()
+
+	t.stats.UpdateState(Started)
+	t.LoggerCh <- fmt.Sprintf("listening on :%d", t.TunnelConfig.LocalPort)
+
+	t.Unlock()
+
+	select {
+	case err := <-t.errChannel:
+		return err
+	}
 }
 
-func (t *Tunnel) GetTunnelId() string {
-	return fmt.Sprintf(
-		"%d:%s:%d over %s@%s:%d",
-		t.TunnelConfig.RemotePort,
-		t.TunnelConfig.RemoteHost,
-		t.TunnelConfig.LocalPort,
-		t.ServerConfig.User,
+func (t *Tunnel) isStarted() bool {
+	return t.stats.State == Started
+}
+
+func (t *Tunnel) forward(localConn net.Conn) {
+	defer localConn.Close()
+
+	sshServerStr := fmt.Sprintf(
+		"%s:%d",
 		t.ServerConfig.Host,
 		t.ServerConfig.Port,
 	)
-}
+	sshConn, err := ssh.Dial("tcp", sshServerStr, t.sshConfig)
+	if err != nil {
+		t.errorWhenStarted(err)
+		return
+	}
+	defer sshConn.Close()
+	t.LoggerCh <- fmt.Sprintf("SSH connection to %s established", sshServerStr)
 
-func (t *Tunnel) getAuthMethods() ([]ssh.AuthMethod, error) {
-	var authMethods []ssh.AuthMethod
+	remoteServerStr := fmt.Sprintf(
+		"%s:%d",
+		t.TunnelConfig.RemoteHost,
+		t.TunnelConfig.RemotePort,
+	)
+	remoteConn, err := sshConn.Dial("tcp", remoteServerStr)
+	if err != nil {
+		t.errorWhenStarted(err)
+		return
+	}
+	defer remoteConn.Close()
+	t.LoggerCh <- fmt.Sprintf("remote connection to %s established", remoteServerStr)
 
-	if t.ServerConfig.KeyFile != "" {
-		privateKey, err := parsePrivateKey(t.ServerConfig.KeyFile)
+	connCtx, connCancel := context.WithCancel(t.tunnelCtx)
+	t.stats.AddConnQty()
+	t.LoggerCh <- fmt.Sprintf("tunnel opened: %s", t.GetTunnelId())
+
+	go func() {
+		var rxCount int64
+		rxCount, err = io.Copy(remoteConn, localConn)
 		if err != nil {
-			return nil, err
+			t.LoggerCh <- fmt.Sprintf("rx error: %s in %s", err.Error(), t.GetTunnelId())
+			connCancel()
+			return
 		}
+		t.stats.AddRxCount(rxCount)
+	}()
 
-		authMethods = append(authMethods, ssh.PublicKeys(privateKey))
+	go func() {
+		var txCount int64
+		txCount, err = io.Copy(localConn, remoteConn)
+		if err != nil {
+			t.LoggerCh <- fmt.Sprintf("tx error: %s in %s", err.Error(), t.GetTunnelId())
+			connCancel()
+			return
+		}
+		t.stats.AddTxCount(txCount)
+	}()
+
+	select {
+	case <-connCtx.Done():
+		connCancel()
+		t.stats.SubConnQty()
+		t.LoggerCh <- fmt.Sprintf("tunnel closed: %s", t.GetTunnelId())
 	}
-
-	if t.ServerConfig.Password != "" {
-		authMethods = append(authMethods, ssh.Password(t.ServerConfig.Password))
-	}
-
-	if len(authMethods) == 0 {
-		return nil, errors.New(
-			fmt.Sprintf(
-				"at leat one auth method should be available for server %s:%d",
-				t.ServerConfig.Host,
-				t.ServerConfig.Port,
-			),
-		)
-	}
-
-	return authMethods, nil
-}
-
-func parsePrivateKey(keyPath string) (ssh.Signer, error) {
-	keyFullPath := getFullKeyPath(keyPath)
-	if _, err := os.Stat(keyFullPath); os.IsNotExist(err) {
-		return nil, err
-	}
-
-	buff, _ := ioutil.ReadFile(keyFullPath)
-	return ssh.ParsePrivateKey(buff)
-}
-
-func getFullKeyPath(keyPath string) string {
-	return strings.Replace(keyPath, "~", os.Getenv("HOME"), 1)
 }

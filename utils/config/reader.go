@@ -6,7 +6,7 @@ import (
 	"io/ioutil"
 )
 
-// Function GetConfiguration reads the configuration from
+// GetConfiguration reads the configuration from
 // the file and converts it to the Configuration object.
 func GetConfiguration(fileName string) (Configuration, error) {
 	var (
